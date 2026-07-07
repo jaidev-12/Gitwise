@@ -14,6 +14,7 @@ from rich.status import Status
 from gitwise.core.cloner import CloneError, clone_repo, repo_name_from_url
 from gitwise.core.indexer import build_index, collection_exists, query_index
 from gitwise.core.llm import LLMError, answer_question
+from gitwise.core.branding import show_intro_animation, print_assistant_label
 
 app = typer.Typer(help="Chat with any GitHub repo in plain English.")
 console = Console()
@@ -73,6 +74,7 @@ def _ask_and_print(repo: str, question: str, n_results: int) -> None:
     with Status("[bold cyan]Asking the model ...", console=console):
         answer = answer_question(question, hits)
 
+    print_assistant_label(console)
     console.print(Markdown(answer))
 
     if hits:
@@ -117,6 +119,8 @@ def chat(
         )
         raise typer.Exit(code=1)
 
+    show_intro_animation(console)
+
     console.print(
         Panel(
             f"Chatting about [bold]{repo}[/bold]. Type your question and press Enter.\n"
@@ -128,7 +132,7 @@ def chat(
 
     while True:
         try:
-            question = typer.prompt("\nYou")
+            question = console.input("\n[bold green]You:[/bold green] ")
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Goodbye.[/dim]")
             break
