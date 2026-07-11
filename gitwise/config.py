@@ -42,3 +42,12 @@ IGNORE_DIRS = {
 
 MAX_FILE_SIZE_BYTES = 300_000  # skip huge generated files
 MAX_FILES_TO_INDEX = 500       # v1 safety cap
+
+# --- Retrieval (hybrid vector + keyword search) ---
+VECTOR_TOP_K = 10   # candidates pulled from Chroma before fusion
+BM25_TOP_K = 10      # candidates pulled from keyword search before fusion
+RRF_K = 60           # reciprocal-rank-fusion smoothing constant
+
+# --- Conversation memory (LangGraph) ---
+MEMORY_DB_PATH = Path(os.environ.get("GITWISE_MEMORY_DB", Path.home() / ".gitwise" / "memory.sqlite"))
+MAX_HISTORY_MESSAGES = 12  # sliding window of turns kept in the prompt (older ones still on disk)

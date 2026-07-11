@@ -5,15 +5,21 @@ Usage:
     gitwise query "How does dependency injection work?" --repo fastapi
     gitwise chat --repo fastapi
 """
+import uuid
+
 import typer
+from langchain_core.messages import HumanMessage
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status
 
 from gitwise.core.cloner import CloneError, clone_repo, repo_name_from_url
-from gitwise.core.indexer import build_index, collection_exists, query_index
+from gitwise.core.indexer import build_index, collection_exists
 from gitwise.core.llm import LLMError, answer_question
+from gitwise.core.retriever import hybrid_query
+from gitwise.graph.chat_graph import build_chat_graph
+from gitwise.memory.checkpointer import thread_id_for
 from gitwise.core.branding import show_intro_animation, print_assistant_label
 
 app = typer.Typer(help="Chat with any GitHub repo in plain English.")
@@ -67,9 +73,12 @@ def index(
 
 
 def _ask_and_print(repo: str, question: str, n_results: int) -> None:
-    """Retrieve context, call the LLM, and print a Markdown answer with sources."""
+    """Retrieve context, call the LLM, and print a Markdown answer with sources.
+
+    Used by the single-shot `query` command (no conversation memory needed there).
+    """
     with Status("[bold cyan]Retrieving relevant code ...", console=console):
-        hits = query_index(repo, question, n_results=n_results)
+        hits = hybrid_query(repo, question, n_results=n_results)
 
     with Status("[bold cyan]Asking the model ...", console=console):
         answer = answer_question(question, hits)
@@ -106,11 +115,15 @@ def query(
 @app.command()
 def chat(
     repo: str = typer.Option(..., "--repo", help="Name given to the repo when it was indexed."),
-    n_results: int = typer.Option(6, "--n-results", help="How many chunks to retrieve for context."),
+    new_session: bool = typer.Option(
+        False, "--new-session", help="Start a fresh conversation instead of resuming the last one for this repo."
+    ),
 ):
-    """Have an ongoing conversation about a previously indexed repo.
+    """Have an ongoing conversation about a previously indexed repo, with memory.
 
-    Type your questions one after another. Type 'exit' or 'quit' to leave.
+    The conversation is checkpointed to a local SQLite file (~/.gitwise/memory.sqlite),
+    so quitting and re-running `gitwise chat --repo <name>` resumes where you left off.
+    Use --new-session to start over instead. Type 'exit' or 'quit' to leave.
     """
     if not collection_exists(repo):
         console.print(
@@ -119,12 +132,18 @@ def chat(
         )
         raise typer.Exit(code=1)
 
+    session = str(uuid.uuid4()) if new_session else "default"
+    thread_id = thread_id_for(repo, session)
+    graph = build_chat_graph()
+    graph_config = {"configurable": {"thread_id": thread_id}}
+
     show_intro_animation(console)
 
     console.print(
         Panel(
             f"Chatting about [bold]{repo}[/bold]. Type your question and press Enter.\n"
-            f"Type [bold]exit[/bold] or [bold]quit[/bold] to leave.",
+            f"Type [bold]exit[/bold] or [bold]quit[/bold] to leave. "
+            f"This conversation is remembered — come back anytime with the same command.",
             title="💬  GitWise Chat",
             border_style="cyan",
         )
@@ -145,7 +164,19 @@ def chat(
             continue
 
         try:
-            _ask_and_print(repo, question, n_results)
+            with Status("[bold cyan]Thinking ...", console=console):
+                result = graph.invoke(
+                    {"messages": [HumanMessage(content=question)], "repo": repo},
+                    config=graph_config,
+                )
+
+            print_assistant_label(console)
+            console.print(Markdown(result["messages"][-1].content))
+
+            hits = result.get("retrieved_chunks") or []
+            if hits:
+                sources = ", ".join(sorted({h["file_path"] for h in hits}))
+                console.print(f"\n[dim]Sources: {sources}[/dim]")
         except LLMError as e:
             console.print(f"[bold red]{e}[/bold red]")
             # Don't exit the loop for one bad answer - let them fix the key and keep chatting
